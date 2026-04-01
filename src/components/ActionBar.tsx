@@ -1,7 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import type { GenreTheme } from "@/types/story";
+import RichStoryEditor, { type RichStoryEditorHandle } from "./RichStoryEditor";
+import { isRichInputEmpty } from "@/lib/htmlToPlainText";
+import { springSnappy } from "@/lib/motionVariants";
 
 interface ActionBarProps {
   theme: GenreTheme;
@@ -11,6 +15,7 @@ interface ActionBarProps {
   onContinue: (userInput?: string) => void;
   onGetChoices: () => void;
   onConclude: () => void;
+  onVisualize: () => Promise<string | null>;
 }
 
 export default function ActionBar({
@@ -21,26 +26,28 @@ export default function ActionBar({
   onContinue,
   onGetChoices,
   onConclude,
+  onVisualize,
 }: ActionBarProps) {
-  const [userInput, setUserInput] = useState("");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
-    }
-  }, [userInput]);
+  const editorRef = useRef<RichStoryEditorHandle>(null);
+  const [isVisualizing, setIsVisualizing] = useState(false);
 
   const handleContinue = () => {
-    onContinue(userInput || undefined);
-    setUserInput("");
+    const html = editorRef.current?.getHTML() ?? "";
+    const trimmed = html.trim();
+    onContinue(isRichInputEmpty(trimmed) ? undefined : trimmed);
+    editorRef.current?.clear();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !isLoading) {
-      e.preventDefault();
-      handleContinue();
+  const handleVisualize = async () => {
+    if (isVisualizing || disabled) return;
+    setIsVisualizing(true);
+    try {
+      const prompt = await onVisualize();
+      if (prompt) {
+        editorRef.current?.insertText(`[Visual prompt] ${prompt}`);
+      }
+    } finally {
+      setIsVisualizing(false);
     }
   };
 
@@ -48,46 +55,60 @@ export default function ActionBar({
 
   return (
     <div className={`border-t ${theme.divider} px-4 sm:px-6 py-4`}>
-      {/* Streaming indicator */}
-      {isLoading && (
-        <div className={`flex items-center gap-2 mb-3 px-1 ${theme.accentText} opacity-60`}>
-          <span className="inline-flex gap-1">
-            {[0, 150, 300].map((delay) => (
-              <span
-                key={delay}
-                className="w-1.5 h-1.5 bg-current rounded-full animate-bounce"
-                style={{ animationDelay: `${delay}ms` }}
-              />
-            ))}
-          </span>
-          <span className="text-sm">Writing your story...</span>
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {isLoading && (
+          <motion.div
+            key="writing"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={springSnappy}
+            className={`flex items-center gap-2 mb-3 px-1 overflow-hidden ${theme.accentText} opacity-60`}
+          >
+            <span className="inline-flex gap-1">
+              {[0, 150, 300].map((delay) => (
+                <motion.span
+                  key={delay}
+                  className="w-1.5 h-1.5 bg-current rounded-full"
+                  animate={{ y: [0, -5, 0] }}
+                  transition={{
+                    duration: 0.55,
+                    repeat: Infinity,
+                    delay: delay / 1000,
+                    ease: "easeInOut",
+                  }}
+                />
+              ))}
+            </span>
+            <span className="text-sm">Writing your story...</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* Input row */}
-      <div className={`flex gap-3 items-end rounded-xl border ${theme.inputBorder} ${theme.inputBg} px-4 py-3 transition-all ${disabled ? "opacity-50" : ""}`}>
-        <textarea
-          ref={textareaRef}
-          value={userInput}
-          onChange={(e) => setUserInput(e.target.value)}
-          onKeyDown={handleKeyDown}
+      <div
+        className={`flex flex-col sm:flex-row gap-3 sm:items-stretch rounded-xl border ${theme.inputBorder} ${theme.inputBg} px-4 py-3 transition-opacity duration-300 ${disabled ? "opacity-50" : "opacity-100"}`}
+      >
+        <RichStoryEditor
+          ref={editorRef}
+          theme={theme}
           disabled={disabled}
+          onModEnter={handleContinue}
           placeholder={
             hasPendingChoices
-              ? "Select a path above to continue..."
-              : "Add your own sentences, or leave blank to let AI continue... (⌘↵)"
+              ? "Select a path above to continue…"
+              : "Add your beat — bold, lists, quotes. ⌘↵ or Continue AI…"
           }
-          rows={1}
-          className={`flex-1 bg-transparent ${theme.storyText} placeholder-current placeholder-opacity-25 text-base resize-none focus:outline-none min-h-[28px] max-h-32 leading-7`}
         />
         <button
+          type="button"
           onClick={handleContinue}
           disabled={disabled}
           className={`
-            shrink-0 px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-200
+            touch-manipulation shrink-0 self-end sm:self-stretch px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors duration-200 sm:min-w-[120px]
+            enabled:active:scale-[0.97] enabled:hover:brightness-105
             ${!disabled
-              ? `${theme.primaryBtn} active:scale-95`
-              : "bg-slate-800 text-slate-600 cursor-not-allowed"
+              ? `${theme.primaryBtn}`
+              : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
             }
           `}
         >
@@ -95,34 +116,60 @@ export default function ActionBar({
         </button>
       </div>
 
-      {/* Buttons row */}
       <div className="flex items-center justify-between mt-3 px-1 gap-2 flex-wrap">
-        <p className={`${theme.accentText} opacity-30 text-xs hidden sm:block`}>
-          ⌘↵ to continue
-        </p>
-        <div className="flex gap-2 ml-auto">
+        <div className="flex items-center gap-2">
+          <p className={`${theme.accentText} opacity-35 text-xs hidden lg:block max-w-[260px]`}>
+            ⌘↵ · Bold, lists, quotes · 🖼 https image · L/C/R/≡ align
+          </p>
           <button
-            onClick={onGetChoices}
-            disabled={disabled}
+            type="button"
+            onClick={handleVisualize}
+            disabled={disabled || isVisualizing}
+            title="Generate an image prompt from the latest AI story beat"
             className={`
-              px-4 py-2 rounded-lg border text-sm font-medium transition-all duration-200
-              ${!disabled
-                ? `${theme.accentBorder} ${theme.accentText} ${theme.accentBg} hover:opacity-80 active:scale-95`
-                : "border-slate-800 text-slate-600 cursor-not-allowed"
+              touch-manipulation px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all duration-200 enabled:active:scale-[0.96] flex items-center gap-1.5
+              ${
+                !disabled && !isVisualizing
+                  ? `${theme.accentBorder} ${theme.accentText} ${theme.accentBg} hover:opacity-90`
+                  : "border-zinc-200 text-zinc-400 cursor-not-allowed opacity-50"
               }
             `}
           >
-            Give Me Choices ✦
+            {isVisualizing ? (
+              <>
+                <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                Generating…
+              </>
+            ) : (
+              <>✨ Visualize</>
+            )}
+          </button>
+        </div>
+        <div className="flex gap-2 ml-auto">
+          <button
+            type="button"
+            onClick={onGetChoices}
+            disabled={disabled}
+            className={`
+              touch-manipulation px-4 py-2 rounded-lg border text-sm font-medium transition-colors duration-200 enabled:active:scale-[0.96] enabled:hover:brightness-105
+              ${!disabled
+                ? `${theme.accentBorder} ${theme.accentText} ${theme.accentBg} hover:opacity-90`
+                : "border-zinc-200 text-zinc-400 cursor-not-allowed"
+              }
+            `}
+          >
+            Give Me Choices ❆
           </button>
           <button
+            type="button"
             onClick={onConclude}
             disabled={disabled}
             title="Ask the AI to write a proper ending"
             className={`
-              px-4 py-2 rounded-lg border text-sm font-medium transition-all duration-200
+              touch-manipulation px-4 py-2 rounded-lg border text-sm font-medium transition-colors duration-200 enabled:active:scale-[0.96] enabled:hover:bg-zinc-100 enabled:hover:border-zinc-400
               ${!disabled
-                ? "border-slate-600 text-slate-300 hover:bg-slate-800 hover:border-slate-400 active:scale-95"
-                : "border-slate-800 text-slate-600 cursor-not-allowed"
+                ? "border-zinc-300 text-zinc-700"
+                : "border-zinc-200 text-zinc-400 cursor-not-allowed"
               }
             `}
           >

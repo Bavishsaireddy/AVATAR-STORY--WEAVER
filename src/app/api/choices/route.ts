@@ -1,27 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { callClaude } from "@/lib/anthropicClient";
-import { callGroq } from "@/lib/groqClient";
+import { callGroq, type GroqMessage } from "@/lib/groqClient";
 import {
   buildSystemPrompt,
-  buildAnthropicMessages,
+  buildLlmMessages,
   CHOICES_SYSTEM_PROMPT,
   buildChoicesUserPrompt,
 } from "@/lib/prompts";
+import {
+  choicesApiTemperature,
+  parseCreativityPreference,
+  serverUsesPerCallTemperatureJitter,
+  withPerCallJitter,
+} from "@/lib/creativityTemperature";
 import type { StoryRequest, StoryChoice } from "@/types/story";
 
-async function callLLM(system: string, messages: { role: "user" | "assistant"; content: string }[], temp: number): Promise<string> {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+async function callLLM(system: string, messages: GroqMessage[], temp: number): Promise<string> {
   const groqKey = process.env.GROQ_API_KEY;
-
-  if (anthropicKey && !anthropicKey.includes("your_")) {
-    try {
-      return await callClaude(system, messages, temp, 400);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      if (msg === "RATE_LIMIT" || msg === "INVALID_KEY") throw err;
-      console.log("Anthropic unavailable, falling back to Groq...");
-    }
-  }
 
   if (groqKey && !groqKey.includes("your_")) {
     return await callGroq(system, messages, temp, 400);
@@ -30,16 +24,28 @@ async function callLLM(system: string, messages: { role: "user" | "assistant"; c
   throw new Error("NO_KEY");
 }
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function POST(req: NextRequest) {
   try {
     const body: StoryRequest = await req.json();
-    const { title, genre, hook, segments, characters, temperature } = body;
+    const { title, genre, hook, segments, characters } = body;
+    const creativityPreference = parseCreativityPreference(body.creativityPreference);
+    const baseChoices = choicesApiTemperature(creativityPreference);
+    const temperature = withPerCallJitter(baseChoices, serverUsesPerCallTemperatureJitter());
 
-    const storyContext = buildSystemPrompt({ title, genre, hook, characters: characters ?? [] });
+    const storyContext = buildSystemPrompt({
+      title,
+      genre,
+      hook,
+      characters: characters ?? [],
+      creativityPreference,
+    });
     const fullSystem = `${storyContext}\n\n${CHOICES_SYSTEM_PROMPT}`;
-    const messages = buildAnthropicMessages(segments ?? [], buildChoicesUserPrompt());
+    const messages = buildLlmMessages(segments ?? [], buildChoicesUserPrompt());
 
-    const raw = await callLLM(fullSystem, messages, Math.min(temperature ?? 0.9, 1.0));
+    const raw = await callLLM(fullSystem, messages, temperature);
 
     let choices: StoryChoice[];
     try {

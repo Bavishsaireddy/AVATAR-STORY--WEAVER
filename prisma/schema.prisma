@@ -1,0 +1,28 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Anonymous browser scope via `client_id` (stored in localStorage). Add auth later if needed.
+model SavedStory {
+  id                   String   @id @default(cuid())
+  clientId             String   @map("client_id")
+  title                String
+  genre                String
+  hook                 String   @db.Text
+  segments             Json
+  characters           Json
+  dna                  Json?
+  creativityPreference String   @map("creativity_preference")
+  phase                String
+  pendingChoices       Json     @map("pending_choices")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@index([clientId, updatedAt])
+  @@map("saved_stories")
+}

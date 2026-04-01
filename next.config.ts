@@ -1,11 +1,18 @@
 import type { NextConfig } from "next";
-import path from "path";
+
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  turbopack: {
-    root: path.resolve(__dirname),
+  serverExternalPackages: [
+    "@prisma/client",
+    "prisma",
+    "@xenova/transformers",
+    "onnxruntime-node",
+    "sharp",
+  ],
+  experimental: {
+    cpus: 1,
   },
+  distDir: ".next.nosync",
 };
 
 export default nextConfig;

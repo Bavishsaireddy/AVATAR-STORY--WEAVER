@@ -1,46 +1,162 @@
 import { NextRequest, NextResponse } from "next/server";
-import { streamClaude } from "@/lib/anthropicClient";
 import { streamGroq } from "@/lib/groqClient";
 import {
   buildSystemPrompt,
   buildContinuationUserMessage,
-  buildAnthropicMessages,
+  buildLlmMessages,
+  buildRemixSystemPrompt,
+  buildRemixUserMessage,
 } from "@/lib/prompts";
-import type { StoryRequest } from "@/types/story";
+import { htmlToPlainText } from "@/lib/htmlToPlainText";
+import { analyzeTextToxicity } from "@/lib/toxicityClassifier";
+import { formatToxicityUserMessage } from "@/lib/toxicityMessages";
+import {
+  parseCreativityPreference,
+  serverUsesPerCallTemperatureJitter,
+  storyApiTemperature,
+  withPerCallJitter,
+} from "@/lib/creativityTemperature";
+import type { Genre, StoryRequest } from "@/types/story";
+
+const GENRES = new Set<Genre>(["Fantasy", "Sci-Fi", "Mystery", "Romance", "Horror", "Comedy"]);
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
     const body: StoryRequest = await req.json();
-    const { title, genre, hook, segments, characters, userInput, temperature, mode, choiceDescription } = body;
+    const { title, genre, hook, segments, characters, userInput, mode, choiceDescription, remixTargetGenre } =
+      body;
 
     if (!title || !genre || !hook) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    const systemPrompt = buildSystemPrompt({ title, genre, hook, characters: characters ?? [] });
-    const userMessage = buildContinuationUserMessage(mode, userInput, choiceDescription);
-    const messages = buildAnthropicMessages(segments ?? [], userMessage);
+    const resolvedMode = mode ?? "continue";
 
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-    const groqKey = process.env.GROQ_API_KEY;
-
-    // Try Anthropic first, auto-fallback to Groq if unavailable
-    if (anthropicKey && !anthropicKey.includes("your_")) {
-      try {
-        return await streamClaude(systemPrompt, messages, temperature ?? 0.7, 700);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "";
-        if (msg === "RATE_LIMIT" || msg === "INVALID_KEY") throw err; // propagate real errors
-        console.log("Anthropic unavailable, falling back to Groq...");
+    if (resolvedMode === "remix") {
+      if (!remixTargetGenre || !GENRES.has(remixTargetGenre)) {
+        return NextResponse.json(
+          { error: "INVALID_REMIX", message: "Choose a valid target genre for the remix." },
+          { status: 400 }
+        );
+      }
+      if (remixTargetGenre === genre) {
+        return NextResponse.json(
+          {
+            error: "INVALID_REMIX",
+            message: "Pick a different genre than your story’s genre — that’s what makes it a remix.",
+          },
+          { status: 400 }
+        );
+      }
+      const hasAiBeat = (segments ?? []).some(
+        (s) => s.role === "ai" && htmlToPlainText(s.text).trim().length >= 16
+      );
+      if (!hasAiBeat) {
+        return NextResponse.json(
+          { error: "INVALID_REMIX", message: "Need at least one AI paragraph to remix." },
+          { status: 400 }
+        );
       }
     }
 
+    if (resolvedMode === "start") {
+      const plainHook = htmlToPlainText(hook).trim();
+      if (plainHook.length >= 8) {
+        const tox = await analyzeTextToxicity(plainHook);
+        if (tox.flagged) {
+          return NextResponse.json(
+            {
+              error: "TOXICITY",
+              message: formatToxicityUserMessage(tox.topLabel, tox.maxScore, tox.threshold),
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    if (userInput) {
+      const plain = htmlToPlainText(userInput).trim();
+      if (plain.length >= 8) {
+        const tox = await analyzeTextToxicity(plain);
+        if (tox.flagged) {
+          return NextResponse.json(
+            {
+              error: "TOXICITY",
+              message: formatToxicityUserMessage(tox.topLabel, tox.maxScore, tox.threshold),
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    if (choiceDescription?.trim()) {
+      const plain = choiceDescription.trim();
+      if (plain.length >= 8) {
+        const tox = await analyzeTextToxicity(plain);
+        if (tox.flagged) {
+          return NextResponse.json(
+            {
+              error: "TOXICITY",
+              message: formatToxicityUserMessage(tox.topLabel, tox.maxScore, tox.threshold),
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    const creativityPreference = parseCreativityPreference(body.creativityPreference);
+    const baseTemp = storyApiTemperature(creativityPreference, resolvedMode);
+    let temperature = withPerCallJitter(baseTemp, serverUsesPerCallTemperatureJitter());
+    if (resolvedMode === "conclude") {
+      temperature = Math.min(0.7, temperature);
+    }
+    if (resolvedMode === "remix") {
+      temperature = Math.min(0.92, temperature + 0.08);
+    }
+
+    const systemPrompt =
+      resolvedMode === "remix" && remixTargetGenre
+        ? buildRemixSystemPrompt({
+            title,
+            storyGenre: genre,
+            targetGenre: remixTargetGenre,
+            hook,
+            characters: characters ?? [],
+          })
+        : buildSystemPrompt({
+            title,
+            genre,
+            hook,
+            characters: characters ?? [],
+            creativityPreference,
+          });
+
+    const startHookPlain =
+      resolvedMode === "start" ? htmlToPlainText(hook).trim() : "";
+
+    const userMessage =
+      resolvedMode === "remix" && remixTargetGenre
+        ? buildRemixUserMessage(remixTargetGenre)
+        : buildContinuationUserMessage(resolvedMode, userInput, choiceDescription, {
+            startFromHookPlain: resolvedMode === "start" ? startHookPlain : undefined,
+          });
+
+    const messages = buildLlmMessages(segments ?? [], userMessage);
+
+    const groqKey = process.env.GROQ_API_KEY;
+
     if (groqKey && !groqKey.includes("your_")) {
-      return await streamGroq(systemPrompt, messages, temperature ?? 0.7, 700);
+      return await streamGroq(systemPrompt, messages, temperature, 700);
     }
 
     return NextResponse.json(
-      { error: "NO_KEY", message: "Add ANTHROPIC_API_KEY or GROQ_API_KEY to .env.local" },
+      { error: "NO_KEY", message: "Add GROQ_API_KEY to .env" },
       { status: 500 }
     );
 

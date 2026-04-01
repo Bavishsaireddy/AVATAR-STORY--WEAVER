@@ -1,10 +1,13 @@
 export type Genre = "Fantasy" | "Sci-Fi" | "Mystery" | "Romance" | "Horror" | "Comedy";
 
+/** Set once at story start; API routes map this to numeric temperature. */
+export type CreativityPreference = "precise" | "balanced" | "creative" | "chaotic";
+
 export type SegmentRole = "user" | "ai";
 
 export type StoryPhase = "setup" | "writing" | "concluded";
 
-export type StoryMode = "start" | "continue" | "choice" | "conclude";
+export type StoryMode = "start" | "continue" | "choice" | "conclude" | "remix";
 
 export interface StorySegment {
   id: string;
@@ -29,6 +32,8 @@ export interface StoryDNA {
   worldRules: string[];        // Established facts about the world
   tensionLevel: number;        // 1–10
   tensionDescription: string;  // One-line summary of current emotional tension
+  /** 2–4 sentences: narrative recap for the live sidebar (updated each enrichment). */
+  runningSummary: string;
 }
 
 export interface StoryState {
@@ -38,11 +43,21 @@ export interface StoryState {
   segments: StorySegment[];
   characters: Character[];
   dna: StoryDNA | null;
-  temperature: number;
+  creativityPreference: CreativityPreference;
   isLoading: boolean;
   error: string | null;
   phase: StoryPhase;
   pendingChoices: StoryChoice[];
+}
+
+/** Row summary for the saved-stories sidebar (Postgres-backed). */
+export interface SavedStoryListItem {
+  id: string;
+  title: string;
+  genre: Genre;
+  phase: StoryPhase;
+  updatedAt: string;
+  beatCount: number;
 }
 
 export interface StoryRequest {
@@ -52,9 +67,11 @@ export interface StoryRequest {
   segments: StorySegment[];
   characters: Character[];
   userInput?: string;
-  temperature: number;
+  creativityPreference: CreativityPreference;
   mode: StoryMode;
   choiceDescription?: string;
+  /** Required when `mode === "remix"` — must differ from `genre`. */
+  remixTargetGenre?: Genre;
 }
 
 export interface StoryResponse {
@@ -84,6 +101,41 @@ export interface DNAResponse {
   dna: StoryDNA;
 }
 
+/** One LLM round-trip for characters + DNA (saves rate limit vs two calls). */
+export interface EnrichSidebarRequest {
+  characters: Character[];
+  dna: StoryDNA | null;
+  newText: string;
+  genre: Genre;
+}
+
+export interface EnrichSidebarResponse {
+  characters: Character[];
+  dna: StoryDNA | null;
+}
+
+export interface GenreClassificationRequest {
+  title?: string;
+  hook?: string;
+}
+
+export interface GenreClassificationResponse {
+  genre: Genre;
+  scores: Record<Genre, number>;
+  /** ONNX / Transformers.js checkpoint id (DistilBERT — BERT-family NLI). */
+  model: string;
+}
+
+/** Toxic-comment BERT family (Detoxify-style) — ONNX in Node via Transformers.js. */
+export interface ToxicityAnalysisResponse {
+  flagged: boolean;
+  maxScore: number;
+  scores: Record<string, number>;
+  topLabel: string;
+  model: string;
+  threshold: number;
+}
+
 // ─── Genre Theming System ────────────────────────────────────────────────────
 
 export interface GenreTheme {
@@ -98,6 +150,8 @@ export interface GenreTheme {
   accentText: string;
   accentBg: string;
   accentBorder: string;
+  /** High-contrast chips for in-text keyword highlights (summary, choices). */
+  keywordHighlight: string;
 
   inputBg: string;
   inputBorder: string;
@@ -116,129 +170,141 @@ export interface GenreTheme {
 
 export const GENRE_THEMES: Record<Genre, GenreTheme> = {
   Fantasy: {
-    pageBg: "bg-[#0c0a06]",
-    panelBg: "bg-amber-950/25",
-    panelBorder: "border-amber-800/30",
-    headerBg: "bg-[#0c0a06]/90",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-serif",
-    storyText: "text-amber-50",
-    accentText: "text-amber-400",
-    accentBg: "bg-amber-950/40",
-    accentBorder: "border-amber-600/40",
-    inputBg: "bg-amber-950/20",
-    inputBorder: "border-amber-800/40",
-    primaryBtn: "bg-amber-400 text-stone-900 hover:bg-amber-300 active:bg-amber-500",
-    choiceCardBase: "bg-amber-950/30 border-amber-700/40 text-amber-50",
-    choiceCardHover: "hover:border-amber-500 hover:bg-amber-900/30",
-    labelText: "text-amber-400/70",
-    mutedText: "text-amber-900/60",
-    divider: "border-amber-900/30",
-    glowStyle: "radial-gradient(ellipse at top, rgba(120,53,15,0.2) 0%, transparent 60%)",
+    storyText: "text-zinc-900",
+    accentText: "text-amber-800",
+    accentBg: "bg-amber-50",
+    accentBorder: "border-amber-300",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-semibold text-amber-950 bg-amber-200 border border-amber-300/60",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
+    primaryBtn: "bg-amber-600 text-white hover:bg-amber-500 active:bg-amber-700",
+    choiceCardBase: "bg-white border-amber-200 text-zinc-900",
+    choiceCardHover: "hover:border-amber-400 hover:bg-amber-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(245,158,11,0.07) 0%, transparent 55%)",
   },
 
   "Sci-Fi": {
-    pageBg: "bg-[#020c0e]",
-    panelBg: "bg-cyan-950/25",
-    panelBorder: "border-cyan-800/30",
-    headerBg: "bg-[#020c0e]/90",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-mono",
-    storyText: "text-cyan-50",
-    accentText: "text-cyan-400",
-    accentBg: "bg-cyan-950/40",
-    accentBorder: "border-cyan-600/40",
-    inputBg: "bg-cyan-950/20",
-    inputBorder: "border-cyan-800/40",
-    primaryBtn: "bg-cyan-400 text-slate-900 hover:bg-cyan-300 active:bg-cyan-500",
-    choiceCardBase: "bg-cyan-950/30 border-cyan-700/40 text-cyan-50",
-    choiceCardHover: "hover:border-cyan-500 hover:bg-cyan-900/30",
-    labelText: "text-cyan-400/70",
-    mutedText: "text-cyan-900/60",
-    divider: "border-cyan-900/30",
-    glowStyle: "radial-gradient(ellipse at top, rgba(8,145,178,0.15) 0%, transparent 60%)",
+    storyText: "text-zinc-900",
+    accentText: "text-cyan-800",
+    accentBg: "bg-cyan-50",
+    accentBorder: "border-cyan-300",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-semibold text-cyan-950 bg-cyan-200 border border-cyan-300/60",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
+    primaryBtn: "bg-cyan-600 text-white hover:bg-cyan-500 active:bg-cyan-700",
+    choiceCardBase: "bg-white border-cyan-200 text-zinc-900",
+    choiceCardHover: "hover:border-cyan-400 hover:bg-cyan-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(6,182,212,0.07) 0%, transparent 55%)",
   },
 
   Mystery: {
-    pageBg: "bg-[#07060a]",
-    panelBg: "bg-yellow-950/20",
-    panelBorder: "border-yellow-900/30",
-    headerBg: "bg-[#07060a]/90",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-serif",
-    storyText: "text-yellow-50",
-    accentText: "text-yellow-500",
-    accentBg: "bg-yellow-950/40",
-    accentBorder: "border-yellow-700/40",
-    inputBg: "bg-yellow-950/20",
-    inputBorder: "border-yellow-900/40",
-    primaryBtn: "bg-yellow-600 text-black hover:bg-yellow-500 active:bg-yellow-700",
-    choiceCardBase: "bg-yellow-950/30 border-yellow-800/40 text-yellow-50",
-    choiceCardHover: "hover:border-yellow-600 hover:bg-yellow-900/20",
-    labelText: "text-yellow-600/70",
-    mutedText: "text-yellow-950/60",
-    divider: "border-yellow-950/40",
-    glowStyle: "radial-gradient(ellipse at top, rgba(113,63,18,0.15) 0%, transparent 60%)",
+    storyText: "text-zinc-900",
+    accentText: "text-yellow-800",
+    accentBg: "bg-yellow-50",
+    accentBorder: "border-yellow-400",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-bold text-yellow-950 bg-yellow-200 border border-yellow-400/70",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
+    primaryBtn: "bg-yellow-600 text-white hover:bg-yellow-500 active:bg-yellow-700",
+    choiceCardBase: "bg-white border-yellow-300 text-zinc-900",
+    choiceCardHover: "hover:border-yellow-500 hover:bg-yellow-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(234,179,8,0.08) 0%, transparent 55%)",
   },
 
   Romance: {
-    pageBg: "bg-[#0d0408]",
-    panelBg: "bg-pink-950/25",
-    panelBorder: "border-pink-800/30",
-    headerBg: "bg-[#0d0408]/90",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-serif",
-    storyText: "text-pink-50",
-    accentText: "text-pink-400",
-    accentBg: "bg-pink-950/40",
-    accentBorder: "border-pink-600/40",
-    inputBg: "bg-pink-950/20",
-    inputBorder: "border-pink-800/40",
-    primaryBtn: "bg-pink-400 text-white hover:bg-pink-300 active:bg-pink-500",
-    choiceCardBase: "bg-pink-950/30 border-pink-700/40 text-pink-50",
-    choiceCardHover: "hover:border-pink-500 hover:bg-pink-900/30",
-    labelText: "text-pink-400/70",
-    mutedText: "text-pink-950/60",
-    divider: "border-pink-900/30",
-    glowStyle: "radial-gradient(ellipse at top, rgba(131,24,67,0.2) 0%, transparent 60%)",
+    storyText: "text-zinc-900",
+    accentText: "text-pink-800",
+    accentBg: "bg-pink-50",
+    accentBorder: "border-pink-300",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-semibold text-pink-950 bg-pink-200 border border-pink-300/60",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
+    primaryBtn: "bg-pink-600 text-white hover:bg-pink-500 active:bg-pink-700",
+    choiceCardBase: "bg-white border-pink-200 text-zinc-900",
+    choiceCardHover: "hover:border-pink-400 hover:bg-pink-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(236,72,153,0.07) 0%, transparent 55%)",
   },
 
   Horror: {
-    pageBg: "bg-[#050505]",
-    panelBg: "bg-red-950/15",
-    panelBorder: "border-red-900/25",
-    headerBg: "bg-[#050505]/95",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-serif",
-    storyText: "text-slate-300",
-    accentText: "text-red-500",
-    accentBg: "bg-red-950/30",
-    accentBorder: "border-red-800/30",
-    inputBg: "bg-red-950/10",
-    inputBorder: "border-red-900/30",
+    storyText: "text-zinc-900",
+    accentText: "text-red-800",
+    accentBg: "bg-red-50",
+    accentBorder: "border-red-300",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-semibold text-red-950 bg-red-200 border border-red-300/60",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
     primaryBtn: "bg-red-700 text-white hover:bg-red-600 active:bg-red-800",
-    choiceCardBase: "bg-red-950/20 border-red-800/30 text-slate-200",
-    choiceCardHover: "hover:border-red-600 hover:bg-red-950/30",
-    labelText: "text-red-500/70",
-    mutedText: "text-red-950/50",
-    divider: "border-red-950/30",
-    glowStyle: "radial-gradient(ellipse at top, rgba(127,29,29,0.15) 0%, transparent 60%)",
+    choiceCardBase: "bg-white border-red-200 text-zinc-900",
+    choiceCardHover: "hover:border-red-400 hover:bg-red-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(239,68,68,0.06) 0%, transparent 55%)",
   },
 
   Comedy: {
-    pageBg: "bg-[#050e05]",
-    panelBg: "bg-green-950/25",
-    panelBorder: "border-green-800/30",
-    headerBg: "bg-[#050e05]/90",
+    pageBg: "bg-white",
+    panelBg: "bg-white",
+    panelBorder: "border-zinc-200",
+    headerBg: "bg-white/95",
     storyFont: "font-serif",
-    storyText: "text-green-50",
-    accentText: "text-green-400",
-    accentBg: "bg-green-950/40",
-    accentBorder: "border-green-600/40",
-    inputBg: "bg-green-950/20",
-    inputBorder: "border-green-800/40",
-    primaryBtn: "bg-green-400 text-slate-900 hover:bg-green-300 active:bg-green-500",
-    choiceCardBase: "bg-green-950/30 border-green-700/40 text-green-50",
-    choiceCardHover: "hover:border-green-500 hover:bg-green-900/30",
-    labelText: "text-green-400/70",
-    mutedText: "text-green-950/60",
-    divider: "border-green-900/30",
-    glowStyle: "radial-gradient(ellipse at top, rgba(20,83,45,0.2) 0%, transparent 60%)",
+    storyText: "text-zinc-900",
+    accentText: "text-green-800",
+    accentBg: "bg-green-50",
+    accentBorder: "border-green-300",
+    keywordHighlight:
+      "rounded px-1 py-0.5 font-semibold text-green-950 bg-green-200 border border-green-300/60",
+    inputBg: "bg-white",
+    inputBorder: "border-zinc-300",
+    primaryBtn: "bg-green-600 text-white hover:bg-green-500 active:bg-green-700",
+    choiceCardBase: "bg-white border-green-200 text-zinc-900",
+    choiceCardHover: "hover:border-green-400 hover:bg-green-50/90",
+    labelText: "text-zinc-500",
+    mutedText: "text-zinc-400",
+    divider: "border-zinc-200",
+    glowStyle: "radial-gradient(ellipse at top, rgba(34,197,94,0.07) 0%, transparent 55%)",
   },
 };
 
@@ -251,12 +317,22 @@ export const GENRE_EMOJIS: Record<Genre, string> = {
   Comedy:   "😄",
 };
 
+const GENRE_SET = new Set<Genre>(["Fantasy", "Sci-Fi", "Mystery", "Romance", "Horror", "Comedy"]);
+
+/** Runtime-safe genre for theming (avoids crash when DB/API sends an unknown string). */
+export function coerceGenre(value: unknown): Genre {
+  if (typeof value === "string" && GENRE_SET.has(value as Genre)) {
+    return value as Genre;
+  }
+  return "Fantasy";
+}
+
 // Kept for backwards compatibility in any remaining code
 export const GENRE_COLORS: Record<Genre, { bg: string; text: string; border: string; accent: string }> = {
-  Fantasy:  { bg: "bg-amber-950/40",  text: "text-amber-400",  border: "border-amber-600/40",  accent: "#f59e0b" },
-  "Sci-Fi": { bg: "bg-cyan-950/40",   text: "text-cyan-400",   border: "border-cyan-600/40",   accent: "#06b6d4" },
-  Mystery:  { bg: "bg-yellow-950/40", text: "text-yellow-500", border: "border-yellow-700/40", accent: "#eab308" },
-  Romance:  { bg: "bg-pink-950/40",   text: "text-pink-400",   border: "border-pink-600/40",   accent: "#ec4899" },
-  Horror:   { bg: "bg-red-950/30",    text: "text-red-500",    border: "border-red-800/30",    accent: "#ef4444" },
-  Comedy:   { bg: "bg-green-950/40",  text: "text-green-400",  border: "border-green-600/40",  accent: "#22c55e" },
+  Fantasy:  { bg: "bg-amber-50",  text: "text-amber-800",  border: "border-amber-300",  accent: "#d97706" },
+  "Sci-Fi": { bg: "bg-cyan-50",   text: "text-cyan-800",   border: "border-cyan-300",   accent: "#0891b2" },
+  Mystery:  { bg: "bg-yellow-50", text: "text-yellow-800", border: "border-yellow-400", accent: "#ca8a04" },
+  Romance:  { bg: "bg-pink-50",   text: "text-pink-800",   border: "border-pink-300",   accent: "#db2777" },
+  Horror:   { bg: "bg-red-50",    text: "text-red-800",    border: "border-red-300",    accent: "#dc2626" },
+  Comedy:   { bg: "bg-green-50",  text: "text-green-800",  border: "border-green-300",  accent: "#16a34a" },
 };

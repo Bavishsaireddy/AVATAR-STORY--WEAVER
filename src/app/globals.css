@@ -1,8 +1,11 @@
 @import "tailwindcss";
 
+/* Explicit scan paths so utilities always generate (Tailwind v4 + Next.js) */
+@source "../**/*.{js,ts,jsx,tsx,mdx}";
+
 :root {
-  --background: #020817;
-  --foreground: #e2e8f0;
+  --background: #ffffff;
+  --foreground: #18181b;
 }
 
 @theme inline {
@@ -21,6 +24,18 @@ body {
   color: var(--foreground);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .setup-emoji-float,
+  .setup-cta-shimmer,
+  .setup-pill-enter {
+    animation: none !important;
+  }
+
+  .setup-grid {
+    mask-image: none;
+  }
+}
+
 /* Smooth scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;
@@ -31,12 +46,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: #d4d4d8;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: #a1a1aa;
 }
 
 /* Range input thumb */
@@ -63,4 +78,143 @@ input[type="range"]::-moz-range-thumb {
 /* Serif font for story prose */
 .font-serif {
   font-family: Georgia, "Times New Roman", serif;
+}
+
+/* ─── Setup / landing page atmosphere ───────────────────────────────────── */
+
+@keyframes setup-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(2deg);
+  }
+}
+
+.setup-emoji-float {
+  animation: setup-float 5s ease-in-out infinite;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.12));
+}
+
+.setup-grid {
+  background-image:
+    linear-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 30%, black 20%, transparent 75%);
+}
+
+@keyframes setup-shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+.setup-cta-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 60%
+  );
+  animation: setup-shimmer 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes setup-pill-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.setup-pill-enter {
+  animation: setup-pill-enter 0.75s ease-out forwards;
+}
+
+/* ─── TipTap rich story input ─────────────────────────────────────────────── */
+
+.rich-story-editor .ProseMirror {
+  outline: none;
+}
+
+.rich-story-editor .ProseMirror p {
+  margin: 0.2em 0;
+}
+
+.rich-story-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: rgba(24, 24, 27, 0.38);
+}
+
+.rich-story-editor .ProseMirror ul,
+.rich-story-editor .ProseMirror ol {
+  margin: 0.35em 0;
+  padding-left: 1.35rem;
+}
+
+.rich-story-editor .ProseMirror blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.85rem;
+  border-left: 2px solid rgba(161, 161, 170, 0.65);
+}
+
+.rich-story-editor .ProseMirror img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0.75em auto;
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.1);
+}
+
+/* Rendered user contribution (sanitized HTML) */
+.story-user-html p {
+  margin: 0.35em 0;
+}
+
+.story-user-html ul,
+.story-user-html ol {
+  margin: 0.4em 0;
+  padding-left: 1.25rem;
+  list-style-position: outside;
+}
+
+.story-user-html blockquote {
+  margin: 0.5em 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid rgba(161, 161, 170, 0.7);
+  opacity: 0.95;
+}
+
+.story-user-html strong,
+.story-user-html b {
+  font-weight: 700;
+}
+
+.story-user-html em,
+.story-user-html i {
+  font-style: italic;
+}
+
+.story-user-html img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 0.65em auto;
+  border-radius: 0.45rem;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
 }

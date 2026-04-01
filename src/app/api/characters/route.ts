@@ -1,21 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { callClaude } from "@/lib/anthropicClient";
-import { callGroq } from "@/lib/groqClient";
+import { callGroq, type GroqMessage } from "@/lib/groqClient";
 import { CHARACTERS_SYSTEM_PROMPT, buildCharactersUserPrompt } from "@/lib/prompts";
 import type { CharactersRequest, Character } from "@/types/story";
 
-async function callLLM(system: string, messages: { role: "user" | "assistant"; content: string }[], temp: number): Promise<string> {
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+async function callLLM(system: string, messages: GroqMessage[], temp: number): Promise<string> {
   const groqKey = process.env.GROQ_API_KEY;
-
-  if (anthropicKey && !anthropicKey.includes("your_")) {
-    try {
-      return await callClaude(system, messages, temp, 300);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      if (msg === "RATE_LIMIT" || msg === "INVALID_KEY") throw err;
-    }
-  }
 
   if (groqKey && !groqKey.includes("your_")) {
     return await callGroq(system, messages, temp, 300);
@@ -23,6 +12,9 @@ async function callLLM(system: string, messages: { role: "user" | "assistant"; c
 
   throw new Error("NO_KEY");
 }
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {

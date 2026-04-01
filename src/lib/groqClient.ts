@@ -1,3 +1,5 @@
+import { acquireLlmSlot, releaseLlmSlot, withLlmSlot } from "@/lib/llmThrottle";
+
 export type GroqMessage = {
   role: "user" | "assistant" | "system";
   content: string;
@@ -5,113 +7,143 @@ export type GroqMessage = {
 
 export async function callGroq(
   systemPrompt: string,
-  messages: { role: "user" | "assistant"; content: string }[],
+  messages: GroqMessage[],
   temperature: number,
   maxTokens: number = 700
 ): Promise<string> {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-      ],
-      temperature,
-      max_tokens: maxTokens,
-      stream: false,
-    }),
+  return withLlmSlot(async () => {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+        temperature,
+        max_tokens: maxTokens,
+        stream: false,
+      }),
+    });
+
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("retry-after");
+      throw new Error(`RATE_LIMIT:${retryAfter ?? "30"}`);
+    }
+    if (res.status === 401) throw new Error("INVALID_KEY");
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("Groq API error:", res.status, body);
+      throw new Error("API_ERROR");
+    }
+
+    const data = await res.json();
+    return data.choices[0].message.content as string;
   });
-
-  if (res.status === 429) {
-    const retryAfter = res.headers.get("retry-after");
-    throw new Error(`RATE_LIMIT:${retryAfter ?? "30"}`);
-  }
-  if (res.status === 401) throw new Error("INVALID_KEY");
-  if (!res.ok) {
-    const body = await res.text();
-    console.error("Groq API error:", res.status, body);
-    throw new Error("API_ERROR");
-  }
-
-  const data = await res.json();
-  return data.choices[0].message.content as string;
 }
 
 export async function streamGroq(
   systemPrompt: string,
-  messages: { role: "user" | "assistant"; content: string }[],
+  messages: GroqMessage[],
   temperature: number,
   maxTokens: number = 700
 ): Promise<Response> {
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        ...messages,
-      ],
-      temperature,
-      max_tokens: maxTokens,
-      stream: true,
-    }),
-  });
+  await acquireLlmSlot();
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releaseLlmSlot();
+  };
 
-  if (res.status === 429) {
-    const retryAfter = res.headers.get("retry-after");
-    throw new Error(`RATE_LIMIT:${retryAfter ?? "30"}`);
-  }
-  if (res.status === 401) throw new Error("INVALID_KEY");
-  if (!res.ok || !res.body) throw new Error("API_ERROR");
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+        temperature,
+        max_tokens: maxTokens,
+        stream: true,
+      }),
+    });
 
-  const encoder = new TextEncoder();
-  const upstream = res.body;
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("retry-after");
+      releaseOnce();
+      throw new Error(`RATE_LIMIT:${retryAfter ?? "30"}`);
+    }
+    if (res.status === 401) {
+      releaseOnce();
+      throw new Error("INVALID_KEY");
+    }
+    if (!res.ok || !res.body) {
+      releaseOnce();
+      throw new Error("API_ERROR");
+    }
 
-  const readable = new ReadableStream({
-    async start(controller) {
-      const reader = upstream.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+    const encoder = new TextEncoder();
+    const upstream = res.body;
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+    const readable = new ReadableStream({
+      async start(controller) {
+        const reader = upstream.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
-            if (!data || data === "[DONE]") continue;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-            try {
-              const parsed = JSON.parse(data);
-              const text = parsed.choices?.[0]?.delta?.content;
-              if (text) controller.enqueue(encoder.encode(text));
-            } catch {
-              // Skip malformed lines
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              const data = line.slice(6).trim();
+              if (!data || data === "[DONE]") continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const text = parsed.choices?.[0]?.delta?.content;
+                if (text) controller.enqueue(encoder.encode(text));
+              } catch {
+                // Skip malformed lines
+              }
             }
           }
+        } finally {
+          try {
+            controller.close();
+          } catch {
+            /* already closed */
+          }
+          releaseOnce();
         }
-      } finally {
-        controller.close();
-      }
-    },
-  });
+      },
+      cancel() {
+        releaseOnce();
+      },
+    });
 
-  return new Response(readable, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
+    return new Response(readable, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (e) {
+    if (!released) releaseOnce();
+    throw e;
+  }
 }

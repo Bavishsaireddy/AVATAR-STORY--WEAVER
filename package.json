@@ -4,13 +4,29 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "preview": "next build && next start",
-    "lint": "eslint"
+    "build": "prisma generate && env NEXT_TURBOPACK_USE_WORKER=0 next build",
+    "start": "node -e \"require('child_process').execSync('lsof -ti:3000 | xargs kill -9 2>/dev/null || true')\" && next start -H 127.0.0.1",
+    "start:lan": "next start -H 0.0.0.0",
+    "preview": "npm run build && npm run start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate deploy"
   },
   "dependencies": {
-    "next": "16.2.1",
+    "@prisma/client": "^5.22.0",
+    "@tiptap/extension-image": "^3.22.0",
+    "@tiptap/extension-placeholder": "^3.22.0",
+    "@tiptap/extension-text-align": "^3.22.0",
+    "@tiptap/pm": "^3.22.0",
+    "@tiptap/react": "^3.22.0",
+    "@tiptap/starter-kit": "^3.22.0",
+    "@xenova/transformers": "^2.17.2",
+    "framer-motion": "^12.38.0",
+    "isomorphic-dompurify": "^3.7.1",
+    "next": "^15.1.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "uuid": "^13.0.0"
@@ -22,8 +38,11 @@
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
     "eslint": "^9",
-    "eslint-config-next": "16.2.1",
+    "eslint-config-next": "^15.1.0",
+    "prisma": "^5.22.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "typescript-eslint": "^8.58.0",
+    "vitest": "^4.1.2"
   }
 }
